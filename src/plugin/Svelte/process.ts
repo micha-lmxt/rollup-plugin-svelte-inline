@@ -1,8 +1,12 @@
 
-var walk = require('estree-walker').walk;
+import {walk} from 'estree-walker';
+import {createSvelteComponents, ComponentReceipt} from './createComponent';
+import {transform} from '@babel/core';
+import { BaseNode } from 'estree';
+//var walk = require('estree-walker').walk;
 
 
-export const processSvelte = (code, addReplacer, id) => {
+export const processSvelte = (code : string, addReplacer : (name:string, code:string)=> void, id:string) => {
 
     const s1 = code.split("<script ");
     if (s1.length !== 2) {
@@ -16,6 +20,7 @@ export const processSvelte = (code, addReplacer, id) => {
 
     const walkRes = walkScript(script);
 
+    console.log("Walk noscript")
     const walkRes2 = walkNonScript(noscript);
 
     const newSveltes = createSvelteComponents(
@@ -36,13 +41,13 @@ export const processSvelte = (code, addReplacer, id) => {
     console.log(walkRes.components)
 }
 
-const checkJSX = (node, script, offset, level = 0, top = false, componentnum = 0) => {
+const checkJSX = (node : any, script : string, offset : number, level = 0, top = false, componentnum = 0) => {
 
     let newoffset = offset;
     let newlevel = level;
-    let props = {};
+    let props : {[key:string]:string} = {};
     let newscript = script;
-    let foundSomething = false;
+    let foundSomething : boolean|ComponentReceipt = false;
 
     if (node.type === 'CallExpression' && node.callee && node.callee.object && node.callee.object.name === "React") {
 
@@ -124,7 +129,7 @@ const checkJSX = (node, script, offset, level = 0, top = false, componentnum = 0
     return { script: newscript, offset: newoffset, props: props, level: newlevel, change: foundSomething }
 }
 
-const exchangeNodeBy = (node, by, script, offset) => {
+const exchangeNodeBy = (node : any, by : string, script : string , offset : number) => {
 
     const start = offset + node.start;
     const end = offset + node.end;
@@ -138,27 +143,34 @@ const exchangeNodeBy = (node, by, script, offset) => {
 
 }
 
-const getAST = (script, type = "tsx") => {
-    const res = require("@babel/core").transform(script, {
+const getAST = (script : string, type = "tsx") => {
+    const res = transform(script, {
         filename: "component." + type,
         ast: true,
         presets: ["@babel/preset-typescript"],
         plugins: [["@babel/plugin-transform-react-jsx", { throwIfNamespace: false }]],
+        
 
-    })
-    return res.ast;
+    });
+    if (res===undefined){
+        throw("Babel result undefined");
+    }
+    return res!.ast;
 }
 
-const walkScript = (script) => {
+const walkScript = (script:string) => {
     console.log("walk:" + script)
     let ast = getAST(script);
     let script_offset = 0;
     let skipto = -1;
-    const newComponents = []
-
-    walk(ast, {
-        enter: function (node, parent, prop, index) {
-            if (node.start === undefined || node.start < skipto) {
+    const newComponents : ComponentReceipt[] = [];
+    if (!ast){
+        return { script, components: newComponents }
+    }
+    walk((ast  as unknown) as BaseNode, {
+        enter: function (nod/*, parent, prop, index*/) {
+            const node = nod as (BaseNode & {start:undefined|number,end:undefined|number});
+            if (node.start === undefined || node.start! < skipto) {
                 return;
             }
             const checkres = checkJSX(node, script, script_offset, 0, true, newComponents.length);
@@ -174,7 +186,10 @@ const walkScript = (script) => {
                 newComponents.push(checkres.change, ...subwalk.components);
 
                 // skip all sub walking
-                skipto = node.end;
+                if (node.end) {
+                    skipto = node.end;
+                }
+                
             }
 
         },
@@ -187,13 +202,14 @@ const walkScript = (script) => {
     return { script, components: newComponents }
 }
 
-const walkNonScript = (nonscript) => {
+const walkNonScript = (nonscript:string) => {
     console.log("walk:" + nonscript)
-    let ast = getAST(script, "html");
+    let ast = getAST("let _= <>"+nonscript + "</>");
+    let script  = nonscript;
+    let script_offset = 9;
+    const newComponents : ComponentReceipt[] = [];
 
-    const newComponents = [];
-
-    walk(ast, {
+    walk((ast  as unknown) as BaseNode, {
         enter: function (node, parent, prop, index) {
             console.log(node)
         },

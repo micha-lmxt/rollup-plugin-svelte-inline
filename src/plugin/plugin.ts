@@ -1,23 +1,25 @@
 
 const PREFIX = ``;
 import path from 'path';
-import {processSvelte} from './processSvelte';
-
+import {processSvelte} from './Svelte/process';
 
 
 export const inlineSvelte = () => {
-    const replacer = {}
+
+    const replacer : {[key: string]: string} = {}
     const resolvedIds = new Map();
-    const addReplacer = (name, code) => {
+    const addReplacer = (name : string, code : string) => {
+
         replacer[name] = code;
         resolvedIds.set(path.resolve(name), replacer[name]);
+        
     }
 
 
     return {
         name: "rollup-plugin-inline-svelte",
 
-        transform(code, id) {
+        transform(code : string, id : string) {
             console.log("transform: " + id);
 
             if (id.endsWith(".svelte")) {
@@ -25,7 +27,7 @@ export const inlineSvelte = () => {
             }
 
         },
-        resolveId(id, importer) {
+        resolveId(id : string, importer? :string) {
             if (id in replacer) return PREFIX + id;
 
             if (importer) {
@@ -36,8 +38,10 @@ export const inlineSvelte = () => {
             }
         },
 
-        load(id) {
+        load(id : string) {
+
             if (id.startsWith(PREFIX)) {
+
                 // eslint-disable-next-line no-param-reassign
                 id = id.slice(PREFIX.length);
 
