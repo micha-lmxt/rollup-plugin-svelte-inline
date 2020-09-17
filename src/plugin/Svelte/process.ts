@@ -3,12 +3,13 @@ import {walk} from 'estree-walker';
 import {createSvelteComponents, ComponentReceipt} from './createComponent';
 import {transform} from '@babel/core';
 import { BaseNode } from 'estree';
+import {parse} from 'svelte/compiler';
 //var walk = require('estree-walker').walk;
 
 
 export const processSvelte = (code : string, addReplacer : (name:string, code:string)=> void, id:string) => {
 
-    const s1 = code.split("<script ");
+    const s1 = code.split("<script");
     if (s1.length !== 2) {
         return;
     }
@@ -20,12 +21,20 @@ export const processSvelte = (code : string, addReplacer : (name:string, code:st
 
     const walkRes = walkScript(script);
 
-    console.log("Walk noscript")
-    const walkRes2 = walkNonScript(noscript);
+    
+    const s2 = noscript.split("<style");
+    if (s2.length !== 2) {
+        return;
+    }
+    let [style, html] = s2[1].split("</style>");
+    style = "<style" + style + "</style>";
 
     const newSveltes = createSvelteComponents(
         walkRes.components.concat(walkRes2.components)
     );
+
+    console.log("Walk noscript")
+    const walkRes2 = walkNonScript(noscript);
     /*
     console.log(code);
     if (code.includes("const qq = <div>xyz</div>;")) {
@@ -204,7 +213,7 @@ const walkScript = (script:string) => {
 
 const walkNonScript = (nonscript:string) => {
     console.log("walk:" + nonscript)
-    let ast = getAST("let _= <>"+nonscript + "</>");
+    let ast = parse(nonscript);// getAST("let _= <>"+nonscript + "</>");
     let script  = nonscript;
     let script_offset = 9;
     const newComponents : ComponentReceipt[] = [];

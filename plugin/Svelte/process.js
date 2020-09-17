@@ -10,6 +10,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 var estree_walker_1 = require("estree-walker");
 var createComponent_1 = require("./createComponent");
 var core_1 = require("@babel/core");
+var compiler_1 = require("svelte/compiler");
 //var walk = require('estree-walker').walk;
 exports.processSvelte = function (code, addReplacer, id) {
     var s1 = code.split("<script ");
@@ -128,7 +129,6 @@ var getAST = function (script, type) {
         ast: true,
         presets: ["@babel/preset-typescript"],
         plugins: [["@babel/plugin-transform-react-jsx", { throwIfNamespace: false }]],
-        exclude: [/script/g, /<style>/g]
     });
     if (res === undefined) {
         throw ("Babel result undefined");
@@ -168,7 +168,7 @@ var walkScript = function (script) {
 };
 var walkNonScript = function (nonscript) {
     console.log("walk:" + nonscript);
-    var ast = getAST("let _= <>" + nonscript + "</>");
+    var ast = compiler_1.parse(nonscript); // getAST("let _= <>"+nonscript + "</>");
     var script = nonscript;
     var script_offset = 9;
     var newComponents = [];
