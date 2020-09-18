@@ -2,11 +2,12 @@
 const PREFIX = ``;
 import path from 'path';
 import {processSvelte} from './Svelte/process';
+import { getBaseReplacer } from './InlineComponent';
 
 
 export const inlineSvelte = () => {
 
-    const replacer : {[key: string]: string} = {}
+    const replacer : {[key: string]: string} = getBaseReplacer();
     const resolvedIds = new Map();
     const addReplacer = (name : string, code : string) => {
 
@@ -22,8 +23,8 @@ export const inlineSvelte = () => {
         transform(code : string, id : string) {
             console.log("transform: " + id);
 
-            if (id.endsWith(".svelte")) {
-                processSvelte(code,addReplacer,id);
+            if (id.endsWith(".svelte") && !id.startsWith("rollup-plugin-svelte-inline")) {
+                return processSvelte(code,addReplacer,id);
             }
 
         },

@@ -6,8 +6,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 var PREFIX = "";
 var path_1 = __importDefault(require("path"));
 var process_1 = require("./Svelte/process");
+var InlineComponent_1 = require("./InlineComponent");
 exports.inlineSvelte = function () {
-    var replacer = {};
+    var replacer = InlineComponent_1.getBaseReplacer();
     var resolvedIds = new Map();
     var addReplacer = function (name, code) {
         replacer[name] = code;
@@ -17,8 +18,8 @@ exports.inlineSvelte = function () {
         name: "rollup-plugin-inline-svelte",
         transform: function (code, id) {
             console.log("transform: " + id);
-            if (id.endsWith(".svelte")) {
-                process_1.processSvelte(code, addReplacer, id);
+            if (id.endsWith(".svelte") && !id.startsWith("rollup-plugin-svelte-inline")) {
+                return process_1.processSvelte(code, addReplacer, id);
             }
         },
         resolveId: function (id, importer) {

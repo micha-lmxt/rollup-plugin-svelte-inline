@@ -1,83 +1,100 @@
 
-import {walk} from 'estree-walker';
-import {createSvelteComponents, ComponentReceipt} from './createComponent';
-import {transform} from '@babel/core';
+import { walk } from 'estree-walker';
+import { createSvelteComponents, ComponentReceipt } from './createComponent';
+import { transform } from '@babel/core';
 import { BaseNode } from 'estree';
-import {parse} from 'svelte/compiler';
 //var walk = require('estree-walker').walk;
 
 
-export const processSvelte = (code : string, addReplacer : (name:string, code:string)=> void, id:string) => {
+export const processSvelte = (code: string, addReplacer: (name: string, code: string) => void, id: string) => {
 
     const s1 = code.split("<script");
-    if (s1.length !== 2) {
+    if (s1.length !== 2 && s1.length !== 1) {
         return;
     }
-    let [script, rest] = s1[1].split(">").slice(1).join(">").split("</script>");
+    let [script, rest] = s1.length === 1 ? ["", ""] : s1[1].split(">").slice(1).join(">").split("</script>");
 
     const noscript = s1[0] + rest;
-    console.log(noscript)
-    console.log(script)
 
     const walkRes = walkScript(script);
 
-    
     const s2 = noscript.split("<style");
-    if (s2.length !== 2) {
+
+    if (s2.length !== 2 && s2.length !== 1) {
         return;
     }
-    let [style, html] = s2[1].split("</style>");
+
+    let [style, html] = s2.length === 1 ? [">", ""] : s2[1].split("</style>");
     style = "<style" + style + "</style>";
 
-    const newSveltes = createSvelteComponents(
-        walkRes.components.concat(walkRes2.components)
-    );
 
-    console.log("Walk noscript")
-    const walkRes2 = walkNonScript(noscript);
-    /*
-    console.log(code);
-    if (code.includes("const qq = <div>xyz</div>;")) {
-        addReplacer('src/myTest.svelte',
-        `<div>xyz</div>`);
-        return code.replace("const qq = <div>xyz</div>;", "import XXX from './myTest.svelte';")
-    }
-    return code.replace(/texty/g, "huhu");
-    */
-    console.log("Script: ")
-    console.log(walkRes.script)
-    console.log("Components: ")
-    console.log(walkRes.components)
+
+    html = s2[0] + html;
+
+    html = replaceSvelteLogic(html);
+
+    console.log("Walk noscript - " + walkRes.components.length)
+
+    const walkRes2 = walkNonScript(html, walkRes.components.length);
+
+    const rebuiltScript = "<script" + s1[1].split(">")[0] + ">\n" +
+        (walkRes2.hasInlineComponent ? "import SV__InlineGeneralComponent from 'rollup-plugin-svelte-inline/InlineComponent.svelte';\n" : "") +
+        walkRes.components.concat(walkRes2.components).map(v => "import " + v.name + " from '" + makeNewComponentPath(id, v.name) + "';").join("\n") + "\n" +
+        walkRes.script +
+        "</script>";
+
+    console.log("Transformed: ")
+    const resHtml = replaceSvelteLogic(walkRes2.script, true);
+    console.log(rebuiltScript + "\n" + style + "\n" + resHtml);
+
+    console.log(walkRes.components.concat(walkRes2.components))
+    
+    createSvelteComponents(walkRes.components.concat(walkRes2.components)).forEach(v=>addReplacer(makeNewComponentPath(id,v.name),v.code));
+    
+    return rebuiltScript + "\n" + style + "\n" + resHtml;
 }
 
-const checkJSX = (node : any, script : string, offset : number, level = 0, top = false, componentnum = 0) => {
+const makeNewComponentPath = (id: string, name: string): string => {
+    // id - .svelte
+    const rid = id.slice(0, id.length - 7);
+    return rid + name + ".svelte";
+}
+const isJSX = (node: any) => (node.type === 'CallExpression' && node.callee && node.callee.object && node.callee.object.name === "React")
+/** checks a node, if it is a jsx component. */
+const checkJSX = (node: any, script: string, offset: number, level = 0, top = false, componentnum = 0) => {
 
     let newoffset = offset;
     let newlevel = level;
-    let props : {[key:string]:string} = {};
+    let props: { [key: string]: string } = {};
     let newscript = script;
-    let foundSomething : boolean|ComponentReceipt = false;
+    let foundSomething: boolean | ComponentReceipt = false;
 
-    if (node.type === 'CallExpression' && node.callee && node.callee.object && node.callee.object.name === "React") {
+    if (isJSX(node)) {
 
         // JSX element definition
 
-        for (let i = 0; i < node.arguments.length; i++) {
+        for (let i = 1; i < node.arguments.length; i++) {
             // walk through the arguments
-
+            
             const res = checkJSX(node.arguments[i], newscript, newoffset, newlevel + 1);
+            console.log("pppppppppppppppppppppppppppppppppp       " + i +"    " + newoffset + "    ppppppppppp")
+            console.log(res)
             newlevel = res.level;
             newscript = res.script;
             newoffset = res.offset;
             props = Object.assign({}, props, res.props);
         }
         if (top) {
-            const newComponentName = "__ic_" + componentnum;
+            const newComponentName = "IC___" + componentnum;
             const exchange = "{component:" + newComponentName + ",props:{" + Object.keys(props).map(v => v + ":" + props[v]).join(",") + "}}";
             const start = node.start + offset;
             const end = node.end + newoffset;
             const code = newscript.slice(start, end);
-
+            console.log("----------------------------------------------------------------------------------------------------")
+            console.log(start + " and " + end + " - " + node.end + " - " + newoffset)
+            console.log(code)
+            console.log(exchange)
+            console.log("----------------------------------------------------------------------------------------------------")
             foundSomething = { name: newComponentName, props: Object.keys(props), code: code };
             newscript = exchange;
             newoffset = offset + exchange.length - end + start;
@@ -89,13 +106,7 @@ const checkJSX = (node : any, script : string, offset : number, level = 0, top =
         for (let i = 0; i < node.properties.length; i++) {
 
             const property = node.properties[i];
-            console.log("key: ")
-            console.log(property.key)
-            if (property.value) {
-                console.log("value: ")
-                console.log(property.value.type)
-                console.log("start: " + property.value.start + ", end: " + property.value.end)
-            } else { console.log("no value") }
+
             if (property.value.type === "StringLiteral" || (property.value.type === "BooleanLiteral" && property.value.start > -1)) {
                 // todo: transition, in, out import may be needed
                 continue;
@@ -109,22 +120,32 @@ const checkJSX = (node : any, script : string, offset : number, level = 0, top =
 
             const inPropSplit = inProp.split(":");
             let inPropName = inPropSplit[inPropSplit.length > 1 ? 1 : 0].split("|")[0];
+            let whereinput = property.end;
             if (property.value.type === "BooleanLiteral") {
 
                 // empty assignment, eg. "bind:value"
                 exchange = "={" + newProp + "}";
-                startEnd = { start: property.key.end, end: property.key.end };
+                console.log(property)
+                startEnd = { start: whereinput, end: whereinput };
+                
 
                 //todo: handle event forwarding
             }
-
-            let { replace: repl, script: s1, offset: o1 } = exchangeNodeBy(startEnd, exchange, newscript, newoffset);
-            props[newProp] = repl || inPropName, newscript = s1, newoffset = o1;
-
-
             if (inPropSplit.length === "" && inPropSplit[0].toLowerCase() === "bind") {
                 props["_b" + newProp] = "v=>{" + newProp + "=v}";
+
             }
+
+            
+
+            let { replace: repl, script: s1, offset: o1 } = exchangeNodeBy(startEnd, exchange, newscript, newoffset);
+            console.log("before ---------------------------------------------------------------------------------------------------")
+            console.log(newscript)
+            props[newProp] = repl || inPropName, newscript = s1, newoffset = o1;
+            console.log(newscript)
+            console.log("after ---------------------------------------------------------------------------------------------------")
+
+            
 
         }
 
@@ -138,7 +159,97 @@ const checkJSX = (node : any, script : string, offset : number, level = 0, top =
     return { script: newscript, offset: newoffset, props: props, level: newlevel, change: foundSomething }
 }
 
-const exchangeNodeBy = (node : any, by : string, script : string , offset : number) => {
+
+const checkOuterJSX = (node: any, script: string, offset: number, componentnum = 0) => {
+
+
+    let newoffset = offset;
+    let newscript = script;
+    let foundSomething: ComponentReceipt[] = [];
+    let hasInlineGeneralComponent = false;
+
+    if (isJSX(node)) {
+        /*
+        console.log("--------start-------")
+
+            console.log(node)
+            console.log("-------- end -------")
+        */
+        // JSX element definition
+
+        for (let i = 1; i < node.arguments.length; i++) {
+            // walk through the arguments
+
+            const res = checkOuterJSX(node.arguments[i], newscript, newoffset, componentnum + foundSomething.length);
+            newscript = res.script;
+            newoffset = res.offset;
+            if (res.hasInlineGeneralComponent) {
+                hasInlineGeneralComponent = true;
+            }
+            foundSomething.push(...res.change);
+
+
+        }
+
+
+    } else if (node.type === "ObjectExpression" && node.properties) {
+        //nothing here
+    } else if (node.type !== "StringLiteral" && node.type !== "NullLiteral" && node.start && node.end) {
+        /*
+        console.log("-----------start other------------")
+        console.log(node)
+        console.log("----------- end other ------------")
+        */
+        /** todo: handle conditional expression via svelte if stuff 
+        if (node.type === 'ConditionalExpression'){
+            const test = node.test
+            
+            const res1 = checkOuterJSX(node.consequent, newscript, newoffset,componentnum + foundSomething.length);
+            newscript = res1.script;
+            newoffset = res1.offset;
+            foundSomething.push(...res1.change);
+            
+            const res2 = checkOuterJSX(node.alternate, newscript, newoffset,componentnum + foundSomething.length);
+            newscript = res2.script;
+            newoffset = res2.offset;
+            foundSomething.push(...res2.change);
+            
+        }
+        */
+        // todo: transform this case to svelte like if else.
+        /*
+        if (node.type === 'LogicalExpression'){
+
+        }
+        */
+        const oldscript = newscript.slice(node.start + newoffset, node.end + newoffset);
+        // remove surrounding mustache bracket {}
+        const before = newscript.slice(0, node.start + newoffset);
+        const between = before.slice(before.lastIndexOf("{") + 1);
+        if (!between.includes("/*logicreplace-")) {
+
+
+            console.log(between);
+            const after = newscript.slice(node.end + newoffset);
+            const beforelen = newscript.length;
+
+
+            // check for logicexchange
+
+
+            const subwalk = walkScript("let a = " + oldscript, 8, componentnum + foundSomething.length);
+
+
+            newscript = before.slice(0, before.lastIndexOf("{")) + "<SV__InlineGeneralComponent z={" + subwalk.script + "}/>" + after.slice(after.indexOf("}") + 1);
+            hasInlineGeneralComponent = true;
+            foundSomething.push(...subwalk.components);
+            newoffset += newscript.length - beforelen;
+        }
+    }
+    return { script: newscript, offset: newoffset, change: foundSomething, hasInlineGeneralComponent: hasInlineGeneralComponent }
+}
+
+const exchangeNodeBy = (node: any, by: string, script: string, offset: number) => {
 
     const start = offset + node.start;
     const end = offset + node.end;
@@ -152,53 +263,55 @@ const exchangeNodeBy = (node : any, by : string, script : string , offset : numb
 
 }
 
-const getAST = (script : string, type = "tsx") => {
+const getAST = (script: string, type = "tsx") => {
     const res = transform(script, {
         filename: "component." + type,
         ast: true,
         presets: ["@babel/preset-typescript"],
         plugins: [["@babel/plugin-transform-react-jsx", { throwIfNamespace: false }]],
-        
+
 
     });
-    if (res===undefined){
-        throw("Babel result undefined");
+    if (res === undefined) {
+        throw ("Babel result undefined");
     }
     return res!.ast;
 }
 
-const walkScript = (script:string) => {
+
+const walkScript = (script: string, base_script_offset = 0, componentNum = 0) => {
+    let script_offset = 0;
     console.log("walk:" + script)
     let ast = getAST(script);
-    let script_offset = 0;
-    let skipto = -1;
-    const newComponents : ComponentReceipt[] = [];
-    if (!ast){
+
+    let skipto = base_script_offset;
+    const newComponents: ComponentReceipt[] = [];
+    if (!ast) {
         return { script, components: newComponents }
     }
-    walk((ast  as unknown) as BaseNode, {
+    walk((ast as unknown) as BaseNode, {
         enter: function (nod/*, parent, prop, index*/) {
-            const node = nod as (BaseNode & {start:undefined|number,end:undefined|number});
+            const node = nod as (BaseNode & { start: undefined | number, end: undefined | number });
             if (node.start === undefined || node.start! < skipto) {
                 return;
             }
-            const checkres = checkJSX(node, script, script_offset, 0, true, newComponents.length);
+            const checkres = checkJSX(node, script, script_offset, 0, true, componentNum + newComponents.length);
             if (checkres.change) {
 
-                const subwalk = walkScript("let a = " + checkres.script);
+                const subwalk = walkScript("let a = " + checkres.script, 8, componentNum + newComponents.length + 1);
 
                 const ex = exchangeNodeBy(node, subwalk.script, script, script_offset);
 
                 script_offset = ex.offset;
                 script = ex.script;
 
-                newComponents.push(checkres.change, ...subwalk.components);
+                newComponents.push(checkres.change as ComponentReceipt, ...subwalk.components);
 
                 // skip all sub walking
                 if (node.end) {
                     skipto = node.end;
                 }
-                
+
             }
 
         },
@@ -208,19 +321,46 @@ const walkScript = (script:string) => {
         }
         */
     });
-    return { script, components: newComponents }
+    return { script: script.slice(base_script_offset), components: newComponents }
 }
 
-const walkNonScript = (nonscript:string) => {
-    console.log("walk:" + nonscript)
-    let ast = parse(nonscript);// getAST("let _= <>"+nonscript + "</>");
-    let script  = nonscript;
-    let script_offset = 9;
-    const newComponents : ComponentReceipt[] = [];
+const walkNonScript = (nonscript: string, nComponents: number) => {
+    let scriptSp = nonscript.split("<!--");
+    let script = scriptSp[0] + scriptSp.slice(1).map(v => v.split("-->")[1]).join("");
 
-    walk((ast  as unknown) as BaseNode, {
-        enter: function (node, parent, prop, index) {
-            console.log(node)
+
+    console.log("walk:" + script)
+    let ast = getAST("let _= <>" + script + "</>");
+
+    //let script = nonscript;
+    let script_offset = -9;
+    const newComponents: ComponentReceipt[] = [];
+    let skipto = 7;
+    let hasInlineComponent = false;
+    walk((ast as unknown) as BaseNode, {
+        enter: function (nod, parent: any, prop: any, index?: number | null) {
+            const node = nod as (BaseNode & { start: undefined | number, end: undefined | number });
+            if (node.start === undefined || node.start! < skipto || isNaN(parseInt(index as any))) {
+                return;
+            }
+
+            const checkres = checkOuterJSX(node, script, script_offset, nComponents + newComponents.length);
+            if (checkres.hasInlineGeneralComponent) {
+                hasInlineComponent = true;
+            }
+            console.log("###########################################################################")
+            console.log(checkres)
+            console.log("###########################################################################")
+            script = checkres.script;
+            script_offset = checkres.offset;
+            
+            if (checkres.change.length > 0) {
+                newComponents.push(...checkres.change);
+                //console.log(newComponents)
+            }
+            if (node.end) {
+                skipto = node.end;
+            }
         },
         /*
         leave: function (node, parent, prop, index) {
@@ -228,5 +368,31 @@ const walkNonScript = (nonscript:string) => {
         }
         */
     });
-    return { script, components: newComponents }
+    return { script, components: newComponents, hasInlineComponent }
+}
+
+const replaceSvelteLogic = (code: string, back = false) => {
+    const replace = [
+        { i: /#if/g, o: "#if" },
+        { i: /\/if/g, o: "/if" },
+        { i: /:else if/g, o: ":else if" },
+        { i: /:else/g, o: ":else" },
+        { i: /#each/g, o: "#each" },
+        { i: /#await/g, o: "#await" },
+        { i: /:then/g, o: ":then" },
+        { i: /:catch/g, o: ":catch" },
+        { i: /\/await/g, o: "/await" }
+
+    ]
+    if (back) {
+        replace.forEach(v => {
+            code = code.replace(RegExp("/\\*logicreplace-" + v.o + "-\\*/", "g"), v.o)
+        })
+
+    } else {
+        replace.forEach(v => {
+            code = code.replace(v.i, "/*logicreplace-" + v.o + "-*/");
+        })
+    }
+    return code;
 }
