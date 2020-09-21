@@ -27,17 +27,13 @@ exports.processSvelte = function (code, addReplacer, id) {
     style = "<style" + style + "</style>";
     html = s2[0] + html;
     html = replaceSvelteLogic(html);
-    console.log("Walk noscript - " + walkRes.components.length);
     var walkRes2 = walkNonScript(html, walkRes.components.length);
     var rebuiltScript = "<script" + s1[1].split(">")[0] + ">\n" +
         (walkRes2.hasInlineComponent ? "import SV__InlineGeneralComponent from 'rollup-plugin-svelte-inline/InlineComponent.svelte';\n" : "") +
         walkRes.components.concat(walkRes2.components).map(function (v) { return "import " + v.name + " from '" + makeNewComponentPath(id, v.name) + "';"; }).join("\n") + "\n" +
         walkRes.script +
         "</script>";
-    console.log("Transformed: ");
     var resHtml = replaceSvelteLogic(walkRes2.script, true);
-    console.log(rebuiltScript + "\n" + style + "\n" + resHtml);
-    console.log(walkRes.components.concat(walkRes2.components));
     createComponent_1.createSvelteComponents(walkRes.components.concat(walkRes2.components)).forEach(function (v) { return addReplacer(makeNewComponentPath(id, v.name), v.code); });
     return rebuiltScript + "\n" + style + "\n" + resHtml;
 };
@@ -62,8 +58,6 @@ var checkJSX = function (node, script, offset, level, top, componentnum) {
         for (var i = 1; i < node.arguments.length; i++) {
             // walk through the arguments
             var res = checkJSX(node.arguments[i], newscript, newoffset, newlevel + 1);
-            console.log("pppppppppppppppppppppppppppppppppp       " + i + "    " + newoffset + "    ppppppppppp");
-            console.log(res);
             newlevel = res.level;
             newscript = res.script;
             newoffset = res.offset;
@@ -75,11 +69,6 @@ var checkJSX = function (node, script, offset, level, top, componentnum) {
             var start = node.start + offset;
             var end = node.end + newoffset;
             var code = newscript.slice(start, end);
-            console.log("----------------------------------------------------------------------------------------------------");
-            console.log(start + " and " + end + " - " + node.end + " - " + newoffset);
-            console.log(code);
-            console.log(exchange);
-            console.log("----------------------------------------------------------------------------------------------------");
             foundSomething = { name: newComponentName, props: Object.keys(props), code: code };
             newscript = exchange;
             newoffset = offset + exchange.length - end + start;
@@ -98,21 +87,17 @@ var checkJSX = function (node, script, offset, level, top, componentnum) {
             var inProp = property.key.type === "StringLiteral" ? property.key.value : (property.key.name || property.key.value);
             var inPropSplit = inProp.split(":");
             var inPropName = inPropSplit[inPropSplit.length > 1 ? 1 : 0].split("|")[0];
+            var whereinput = property.end;
             if (property.value.type === "BooleanLiteral") {
                 // empty assignment, eg. "bind:value"
                 exchange = "={" + newProp + "}";
-                console.log(property);
-                startEnd = { start: property.end, end: property.end };
+                startEnd = { start: whereinput, end: whereinput };
                 //todo: handle event forwarding
             }
             var _a = exchangeNodeBy(startEnd, exchange, newscript, newoffset), repl = _a.replace, s1 = _a.script, o1 = _a.offset;
-            console.log("before ---------------------------------------------------------------------------------------------------");
-            console.log(newscript);
             props[newProp] = repl || inPropName, newscript = s1, newoffset = o1;
-            console.log(newscript);
-            console.log("after ---------------------------------------------------------------------------------------------------");
-            if (inPropSplit.length === "" && inPropSplit[0].toLowerCase() === "bind") {
-                props["_b" + newProp] = "v=>{" + newProp + "=v}";
+            if (inPropSplit.length > 1 && inPropSplit[0].toLowerCase() === "bind") {
+                props["_b" + newProp] = "v=>{" + (repl || inPropName) + "=v}";
             }
         }
     }
@@ -130,12 +115,10 @@ var checkOuterJSX = function (node, script, offset, componentnum) {
     var foundSomething = [];
     var hasInlineGeneralComponent = false;
     if (isJSX(node)) {
-        /*
-        console.log("--------start-------")
-
-            console.log(node)
-            console.log("-------- end -------")
-        */
+        if (node.arguments && node.arguments.length > 0) {
+            var ar = node.arguments[0];
+            console.log(ar.name);
+        }
         // JSX element definition
         for (var i = 1; i < node.arguments.length; i++) {
             // walk through the arguments
@@ -152,11 +135,6 @@ var checkOuterJSX = function (node, script, offset, componentnum) {
         //nothing here
     }
     else if (node.type !== "StringLiteral" && node.type !== "NullLiteral" && node.start && node.end) {
-        /*
-        console.log("-----------start other------------")
-        console.log(node)
-        console.log("----------- end other ------------")
-        */
         /** todo: handle conditional expression via svelte if stuff
         if (node.type === 'ConditionalExpression'){
             const test = node.test
@@ -184,7 +162,6 @@ var checkOuterJSX = function (node, script, offset, componentnum) {
         var before = newscript.slice(0, node.start + newoffset);
         var between = before.slice(before.lastIndexOf("{") + 1);
         if (!between.includes("/*logicreplace-")) {
-            console.log(between);
             var after = newscript.slice(node.end + newoffset);
             var beforelen = newscript.length;
             // check for logicexchange
@@ -224,13 +201,14 @@ var walkScript = function (script, base_script_offset, componentNum) {
     if (base_script_offset === void 0) { base_script_offset = 0; }
     if (componentNum === void 0) { componentNum = 0; }
     var script_offset = 0;
-    console.log("walk:" + script);
     var ast = getAST(script);
     var skipto = base_script_offset;
+    var outerSkip = base_script_offset;
     var newComponents = [];
     if (!ast) {
         return { script: script, components: newComponents };
     }
+    var definedVars = [];
     estree_walker_1.walk(ast, {
         enter: function (nod /*, parent, prop, index*/) {
             var node = nod;
@@ -249,14 +227,113 @@ var walkScript = function (script, base_script_offset, componentNum) {
                     skipto = node.end;
                 }
             }
+            // check code for assignments
+            if (node.start >= outerSkip && node.type === 'Program') {
+                var nob = node;
+                var start = node.start;
+                var j = 0;
+                var bl = nob.body ? nob.body.length : 0;
+                while (start < node.end) {
+                    var bodyElNode = undefined;
+                    // parse body elements or skip to node end
+                    var hasMoreBody = (j < bl);
+                    var end = 0;
+                    if (!hasMoreBody) {
+                        end = nob.end;
+                    }
+                    else {
+                        var bodyEl = nob.body[j];
+                        if (start < bodyEl.start) {
+                            end = bodyEl.start;
+                        }
+                        else {
+                            end = bodyEl.end;
+                            bodyElNode = bodyEl;
+                            j++;
+                        }
+                    }
+                    var code = script.slice(start + script_offset, end + script_offset);
+                    start = end;
+                    if (code.trim().length == 0 || (bodyElNode && bodyElNode.type === "EmptyStatement")) {
+                        continue;
+                    }
+                    console.log("-----------------code-------------------");
+                    console.log(code);
+                    if (bodyElNode) {
+                        //
+                        var hasdec = false;
+                        if (bodyElNode.declaration) {
+                            if (bodyElNode.declaration.declarations) {
+                                if (bodyElNode.declaration.declarations) {
+                                    bodyElNode.declaration.declarations.forEach(function (v) { definedVars.push({ var: v.id.name, isSvelte: false }); });
+                                    hasdec = true;
+                                }
+                            }
+                            hasdec = true;
+                        }
+                        if (bodyElNode.declarations) {
+                            bodyElNode.declarations.forEach(function (v) { definedVars.push({ var: v.id.name, isSvelte: false }); });
+                            hasdec = true;
+                        }
+                        if (!hasdec) {
+                            if (bodyElNode.type === 'ImportDeclaration') {
+                                console.log(bodyElNode.source.extra);
+                                var fromSvelte = bodyElNode.source.extra.rawValue.endsWith(".svelte");
+                                console.log(bodyElNode.source.extra.rawValue + " -> " + fromSvelte);
+                                bodyElNode.specifiers.forEach(function (v) { return console.log(v.local.name); });
+                            }
+                            else {
+                                console.log(bodyElNode);
+                            }
+                        }
+                    }
+                    else {
+                        // handle imports
+                        var imp = code.split("import ").slice(1);
+                        for (var i = 0; i < imp.length; i++) {
+                            var im = imp[i];
+                            if (im.trim().startsWith("type")) {
+                                continue;
+                            }
+                            var fr = im.split("from");
+                            if (fr.length !== 2) {
+                                continue;
+                            }
+                            var fromSvelte = fr[1].replace(/[;`'"\n]/g, "").trim().endsWith(".svelte");
+                            var fb = fr[0].indexOf("{");
+                            if (fb < 0) {
+                                // only default
+                                definedVars.push({ var: fr[0].trim(), isSvelte: fromSvelte });
+                            }
+                            else {
+                                var lb = fr[0].lastIndexOf("}");
+                                var nondefault = fr[0].slice(fb, lb).split(/[{,}]/g).filter(function (v) { return v.length > 0; });
+                                for (var _i = 0, nondefault_1 = nondefault; _i < nondefault_1.length; _i++) {
+                                    var nd = nondefault_1[_i];
+                                    var v = (nd.includes(" as ") ? nd.split(" as ")[1] : nd).trim();
+                                    definedVars.push({ var: v, isSvelte: false });
+                                }
+                                var defaultEx = fr[0].slice(0, fb) + fr[0].slice(lb + 1).replace(",", "").trim();
+                                if (defaultEx.length > 0) {
+                                    definedVars.push({ var: defaultEx, isSvelte: fromSvelte });
+                                }
+                            }
+                        }
+                    }
+                    if (code.trim().length > 0) {
+                        console.log("-----------------end code-------------------");
+                    }
+                }
+                outerSkip = node.end;
+            }
         },
     });
-    return { script: script.slice(base_script_offset), components: newComponents };
+    console.log(definedVars);
+    return { script: script.slice(base_script_offset), components: newComponents, definedVars: definedVars };
 };
 var walkNonScript = function (nonscript, nComponents) {
     var scriptSp = nonscript.split("<!--");
     var script = scriptSp[0] + scriptSp.slice(1).map(function (v) { return v.split("-->")[1]; }).join("");
-    console.log("walk:" + script);
     var ast = getAST("let _= <>" + script + "</>");
     //let script = nonscript;
     var script_offset = -9;
@@ -273,14 +350,10 @@ var walkNonScript = function (nonscript, nComponents) {
             if (checkres.hasInlineGeneralComponent) {
                 hasInlineComponent = true;
             }
-            console.log("###########################################################################");
-            console.log(checkres);
-            console.log("###########################################################################");
             script = checkres.script;
             script_offset = checkres.offset;
             if (checkres.change.length > 0) {
                 newComponents.push.apply(newComponents, checkres.change);
-                //console.log(newComponents)
             }
             if (node.end) {
                 skipto = node.end;

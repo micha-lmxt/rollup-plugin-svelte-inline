@@ -15,12 +15,8 @@ const createComponent = (rec: ComponentReceipt) => {
 
     const { name, props } = rec;
     const code = `<script>` +
-        props.map(v => {
-            if (v.startsWith("_b")) {
-                return `export let ` + v + `;\n$: ` + v + `(` + v.slice(2) + `);\n`;
-            }
-            return `export let ` + v;
-        }).join(`;`) +
+        props.filter(v => !v.startsWith("_b")).map(v => `export let ` + v).join(`;`) + ";" +
+        props.filter(v => v.startsWith("_b")).map(v => (`export let ` + v + `;\n$: ` + v + `(` + v.slice(2) + `);\n`)).join(";") + ";" +
         `</script>` +
         rec.code;
     console.log(code);
