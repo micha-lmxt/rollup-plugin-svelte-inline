@@ -1,10 +1,10 @@
 
 import { walk } from 'estree-walker';
 import { createSvelteComponents, ComponentReceipt } from './createComponent';
-import { transform } from '@babel/core';
+import { parse } from '@babel/parser';
 import { BaseNode } from 'estree';
-//var walk = require('estree-walker').walk;
 
+interface DefinedVar { var: string, isSvelte: boolean, imported: boolean }
 
 export const processSvelte = (code: string, addReplacer: (name: string, code: string) => void, id: string) => {
 
@@ -33,8 +33,8 @@ export const processSvelte = (code: string, addReplacer: (name: string, code: st
 
     html = replaceSvelteLogic(html);
 
-
-    const walkRes2 = walkNonScript(html, walkRes.components.length);
+    console.log("here")
+    const walkRes2 = walkNonScript(html, walkRes.components.length, walkRes.definedVars);
 
     const rebuiltScript = "<script" + s1[1].split(">")[0] + ">\n" +
         (walkRes2.hasInlineComponent ? "import SV__InlineGeneralComponent from 'rollup-plugin-svelte-inline/InlineComponent.svelte';\n" : "") +
@@ -45,19 +45,76 @@ export const processSvelte = (code: string, addReplacer: (name: string, code: st
 
     const resHtml = replaceSvelteLogic(walkRes2.script, true);
 
-    createSvelteComponents(walkRes.components.concat(walkRes2.components)).forEach(v => addReplacer(makeNewComponentPath(id, v.name), v.code));
+    createSvelteComponents(walkRes.components.concat(walkRes2.components), walkRes.imports).forEach(v => addReplacer(makeNewComponentPath(id, v.name), v.code));
 
     return rebuiltScript + "\n" + style + "\n" + resHtml;
 }
 
 const makeNewComponentPath = (id: string, name: string): string => {
-    // id - .svelte
+
     const rid = id.slice(0, id.length - 7);
     return rid + name + ".svelte";
+
 }
-const isJSX = (node: any) => (node.type === 'CallExpression' && node.callee && node.callee.object && node.callee.object.name === "React")
+
+const isJSX = (node: any) => node.type === "JSXElement";
+
+const trivialElement = (x: any) => (x && x.type === 'StringLiteral' ||
+    (x.type === "JSXExpressionContainer" && x.expression.type.endsWith("Literal")));
+
 /** checks a node, if it is a jsx component. */
-const checkJSX = (node: any, script: string, offset: number, level = 0, top = false, componentnum = 0) => {
+const readJSXAttributes = (attrs: any[], level: number, script: string, offset: number) => {
+    let newscript = script;
+    let newoffset = offset;
+    const props: { [key: string]: string } = {};
+    for (let i = 0; i < attrs.length; i++) {
+
+        const property = attrs[i];
+
+        // has eg. bind:... or on:.. 
+        const hasNameSpace = property.name.type === 'JSXNamespacedName';
+        const wantBind = hasNameSpace && property.name.namespace.name === "bind";
+        const wantClass = hasNameSpace && property.name.namespace.name === "class";
+        if ((property.value === null && !wantClass && !wantBind) ||
+            (trivialElement(property.value))) {
+            continue;
+        }
+
+        const newProp = "__z_" + level + "_" + i;
+        let exchange = newProp;
+        let startEnd = property.value;
+
+        const inProp = hasNameSpace ? property.name.name.name : property.name.name;
+
+
+        // handle empty class or bind assignments
+
+        let whereinput = property.end;
+        if (property.value === null && (wantBind || wantClass)) {
+
+            // empty assignment, eg. "bind:value"
+            exchange = "={" + newProp + "}";
+
+            startEnd = { start: whereinput, end: whereinput };
+
+            //todo: handle event forwarding
+        } else {
+            startEnd = { start: startEnd.start + 1, end: startEnd.end - 1 }
+        }
+
+        let { replace: repl, script: s1, offset: o1 } = exchangeNodeBy(startEnd, exchange, newscript, newoffset);
+        props[newProp] = repl || inProp, newscript = s1, newoffset = o1;
+        if (wantBind) {
+            props["_b" + newProp] = "v=>{" + (repl || inProp) + "=v}";
+
+        }
+
+    }
+    return { newscript, newoffset, newprops: props }
+}
+
+// used in the walk procedure. 
+const checkJSX = (node: any, definedVars: DefinedVar[], script: string, offset: number, level = 0, top = false, componentnum = 0) => {
 
     let newoffset = offset;
     let newlevel = level;
@@ -65,14 +122,33 @@ const checkJSX = (node: any, script: string, offset: number, level = 0, top = fa
     let newscript = script;
     let foundSomething: boolean | ComponentReceipt = false;
 
+
     if (isJSX(node)) {
+        const elementName = node.openingElement?.name?.name;
+        if (elementName.slice(0, 1) !== elementName.slice(0, 1).toLowerCase()) {
+            const defined = definedVars.find(v => elementName === v.var);
+            if (!defined) {
+                console.log("Warning, did not find Component: " + elementName);
+            }else{
+                if (!defined.isSvelte){
+
+                }
+            }
+        }
 
         // JSX element definition
+        const attrRes = readJSXAttributes(node.openingElement?.attributes || [], newlevel, newscript, newoffset);
+        props = Object.assign(props, attrRes.newprops);
+        newscript = attrRes.newscript;
+        newoffset = attrRes.newoffset;
 
-        for (let i = 1; i < node.arguments.length; i++) {
+
+        const children = node.children || [];
+
+        for (let i = 0; i < children.length; i++) {
             // walk through the arguments
 
-            const res = checkJSX(node.arguments[i], newscript, newoffset, newlevel + 1);
+            const res = checkJSX(children[i], definedVars, newscript, newoffset, newlevel + 1);
 
             newlevel = res.level;
             newscript = res.script;
@@ -90,58 +166,22 @@ const checkJSX = (node: any, script: string, offset: number, level = 0, top = fa
             newscript = exchange;
             newoffset = offset + exchange.length - end + start;
 
+
         }
 
-    } else if ((!top) && node.type === "ObjectExpression" && node.properties) {
-
-        for (let i = 0; i < node.properties.length; i++) {
-
-            const property = node.properties[i];
-
-            if (property.value.type === "StringLiteral" || (property.value.type === "BooleanLiteral" && property.value.start > -1)) {
-                // todo: transition, in, out import may be needed
-                continue;
-            }
-
-            const newProp = "__z_" + level + "_" + i;
-            let exchange = newProp;
-            let startEnd = property.value;
-
-            const inProp = property.key.type === "StringLiteral" ? property.key.value : (property.key.name || property.key.value);
-
-            const inPropSplit = inProp.split(":");
-            let inPropName = inPropSplit[inPropSplit.length > 1 ? 1 : 0].split("|")[0];
-            let whereinput = property.end;
-            if (property.value.type === "BooleanLiteral") {
-
-                // empty assignment, eg. "bind:value"
-                exchange = "={" + newProp + "}";
-
-                startEnd = { start: whereinput, end: whereinput };
-
-
-                //todo: handle event forwarding
-            }
-
-            let { replace: repl, script: s1, offset: o1 } = exchangeNodeBy(startEnd, exchange, newscript, newoffset);
-            props[newProp] = repl || inPropName, newscript = s1, newoffset = o1;
-            if (inPropSplit.length > 1 && inPropSplit[0].toLowerCase() === "bind") {
-                props["_b" + newProp] = "v=>{" + (repl || inPropName) + "=v}";
-
-            }
-        }
-
-    } else if ((!top) && node.type !== "StringLiteral" && node.type !== "NullLiteral" && node.start && node.end) {
+    } else if ((!top) && node.type === "JSXExpressionContainer" && !trivialElement(node) && node.start && node.end) {
 
         const newProp = "__y_" + level;
-        let { replace: repl, script: s1, offset: o1 } = exchangeNodeBy(node, newProp, newscript, newoffset);
-        props[newProp] = repl, newscript = s1, newoffset = o1;
+        let { replace: repl, script: s1, offset: o1 } = exchangeNodeBy(node, "{" + newProp + "}", newscript, newoffset);
+        props[newProp] = repl.slice(1, repl.length - 1), newscript = s1, newoffset = o1;
+        console.log(props)
+
     }
     return { script: newscript, offset: newoffset, props: props, level: newlevel, change: foundSomething }
 }
 
-
-const checkOuterJSX = (node: any, script: string, offset: number, componentnum = 0) => {
+// check the non-script part of the svelte document
+const checkOuterJSX = (node: any, script: string, offset: number, defindeVars: DefinedVar[], componentnum = 0) => {
 
 
     let newoffset = offset;
@@ -153,8 +193,6 @@ const checkOuterJSX = (node: any, script: string, offset: number, componentnum =
         if (node.arguments && node.arguments.length > 0) {
             const ar = node.arguments[0]
             console.log(ar.name);
-
-
         }
 
         // JSX element definition
@@ -162,7 +200,7 @@ const checkOuterJSX = (node: any, script: string, offset: number, componentnum =
         for (let i = 1; i < node.arguments.length; i++) {
             // walk through the arguments
 
-            const res = checkOuterJSX(node.arguments[i], newscript, newoffset, componentnum + foundSomething.length);
+            const res = checkOuterJSX(node.arguments[i], newscript, newoffset, defindeVars, componentnum + foundSomething.length);
             newscript = res.script;
             newoffset = res.offset;
             if (res.hasInlineGeneralComponent) {
@@ -216,7 +254,7 @@ const checkOuterJSX = (node: any, script: string, offset: number, componentnum =
             const subwalk = walkScript("let a = " + oldscript, 8, componentnum + foundSomething.length);
 
 
-            newscript = before.slice(0, before.lastIndexOf("{")) + "<SV__InlineGeneralComponent z={" + subwalk.script + "}/>" + after.slice(after.indexOf("}") + 1);
+            newscript = before.slice(0, before.lastIndexOf("{")) + "<SV__InlineGeneralComponent __z={" + subwalk.script + "}/>" + after.slice(after.indexOf("}") + 1);
             hasInlineGeneralComponent = true;
             foundSomething.push(...subwalk.components);
             newoffset += newscript.length - beforelen;
@@ -240,7 +278,7 @@ const exchangeNodeBy = (node: any, by: string, script: string, offset: number) =
 }
 
 const getAST = (script: string, type = "tsx") => {
-    const res = transform(script, {
+    /*const res = transform(script, {
         filename: "component." + type,
         ast: true,
         presets: ["@babel/preset-typescript"],
@@ -251,7 +289,11 @@ const getAST = (script: string, type = "tsx") => {
     if (res === undefined) {
         throw ("Babel result undefined");
     }
-    return res!.ast;
+    return res!.ast;*/
+    return parse(script, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"]
+    })
 }
 
 
@@ -260,20 +302,33 @@ const walkScript = (script: string, base_script_offset = 0, componentNum = 0) =>
 
     let ast = getAST(script);
 
+
     let skipto = base_script_offset;
     let outerSkip = base_script_offset;
     const newComponents: ComponentReceipt[] = [];
+    const definedVars: DefinedVar[] = [];
+    let imports = "";
     if (!ast) {
-        return { script, components: newComponents }
+        return { script, components: newComponents, definedVars, imports }
     }
-    const definedVars: {var:string,isSvelte:boolean, imported:boolean}[] = [];
+
+
+    let i = -3
     walk((ast as unknown) as BaseNode, {
         enter: function (nod/*, parent, prop, index*/) {
             const node = nod as (BaseNode & { start: undefined | number, end: undefined | number });
+
+            i++;
+            if (i>0 && i < 20){
+                console.log(node)
+            }
+
             if (node.start === undefined || node.start! < skipto) {
                 return;
             }
-            const checkres = checkJSX(node, script, script_offset, 0, true, componentNum + newComponents.length);
+
+
+            const checkres = checkJSX(node, definedVars, script, script_offset, 0, true, componentNum + newComponents.length);
             if (checkres.change) {
 
                 const subwalk = walkScript("let a = " + checkres.script, 8, componentNum + newComponents.length + 1);
@@ -297,8 +352,10 @@ const walkScript = (script: string, base_script_offset = 0, componentNum = 0) =>
                 let start = node.start;
                 let j = 0;
                 const bl = nob.body ? nob.body.length : 0;
-                
+
                 while (start < node.end!) {
+
+
                     let bodyElNode: any | undefined = undefined;
                     // parse body elements or skip to node end
                     const hasMoreBody = (j < bl);
@@ -318,9 +375,9 @@ const walkScript = (script: string, base_script_offset = 0, componentNum = 0) =>
 
                     const code = script.slice(start + script_offset, end + script_offset);
                     start = end;
-                    if (code.trim().length==0 || (bodyElNode && bodyElNode.type==="EmptyStatement")){
+                    if (code.trim().length == 0 || (bodyElNode && bodyElNode.type === "EmptyStatement")) {
                         continue;
-                        
+
                     }
                     /*
                     console.log("-----------------code-------------------");
@@ -328,68 +385,72 @@ const walkScript = (script: string, base_script_offset = 0, componentNum = 0) =>
                     */
 
                     if (bodyElNode) {
-                        
+
                         let hasdec = false;
-                        if (bodyElNode.declaration){
-                            if (bodyElNode.declaration.declarations){
-                                if (bodyElNode.declaration.declarations){
-                                    bodyElNode.declaration.declarations.forEach((v:any)=>{definedVars.push({var:v.id.name,isSvelte:false, imported:false})});
+                        if (bodyElNode.declaration) {
+                            if (bodyElNode.declaration.declarations) {
+                                if (bodyElNode.declaration.declarations) {
+                                    bodyElNode.declaration.declarations.forEach((v: any) => { definedVars.push({ var: v.id.name, isSvelte: false, imported: false }) });
                                     hasdec = true;
                                 }
                             }
-                            
-                            hasdec=true;
-                        }
-                        if (bodyElNode.declarations){
-                            bodyElNode.declarations.forEach((v:any)=>{definedVars.push({var:v.id.name,isSvelte:false, imported:false})});
+
                             hasdec = true;
                         }
-                        if (!hasdec){
-                            if (bodyElNode.type === 'ImportDeclaration'){
-                                
-                                const fromSvelte = bodyElNode.source.extra.rawValue.endsWith(".svelte");
-                                
-                                bodyElNode.specifiers.forEach((v:any)=>console.log(v.local.name));
-                            }else{
+                        if (bodyElNode.declarations) {
+                            bodyElNode.declarations.forEach((v: any) => { definedVars.push({ var: v.id.name, isSvelte: false, imported: false }) });
+                            hasdec = true;
+                        }
+                        if (!hasdec) {
+                            if (bodyElNode.type === 'ImportDeclaration') {
+
+                                imports += code + ";";
+                                const fromSvelte = bodyElNode.source.value.endsWith(".svelte");
+
+                                bodyElNode.specifiers.forEach((v: any) => definedVars.push({ var: v.local.name, isSvelte: fromSvelte && v.type === 'ImportDefaultSpecifier', imported: true }));
+
+                            } else {
                                 //console.log(bodyElNode);
                             }
                         }
                     } else {
+
                         // handle imports
                         const imp = code.split("import ").slice(1);
+                        imports += imp.join("import ");
                         for (let i = 0; i < imp.length; i++) {
                             const im = imp[i];
-                            if (im.trim().startsWith("type")){
+                            if (im.trim().startsWith("type")) {
                                 continue;
                             }
                             const fr = im.split("from");
-                            if (fr.length!==2){
+                            if (fr.length !== 2) {
                                 continue;
                             }
-                            const fromSvelte = fr[1].replace(/[;`'"\n]/g,"").trim().endsWith(".svelte");                                                   
+                            const fromSvelte = fr[1].replace(/[;`'"\n]/g, "").trim().endsWith(".svelte");
                             const fb = fr[0].indexOf("{");
-                                                        
-                            if (fb < 0){
+
+                            if (fb < 0) {
                                 // only default
-                                definedVars.push({var:fr[0].trim(),isSvelte:fromSvelte,imported:true});
-                            }else{
+                                definedVars.push({ var: fr[0].trim(), isSvelte: fromSvelte, imported: true });
+                            } else {
                                 const lb = fr[0].lastIndexOf("}");
-                                const nondefault = fr[0].slice(fb,lb).split(/[{,}]/g).filter(v=>v.length>0);
-                                for (let nd of nondefault){
+                                const nondefault = fr[0].slice(fb, lb).split(/[{,}]/g).filter(v => v.length > 0);
+                                for (let nd of nondefault) {
                                     const v = (nd.includes(" as ") ? nd.split(" as ")[1] : nd).trim();
-                                    definedVars.push({var:v,isSvelte:false,imported:true});
+                                    definedVars.push({ var: v, isSvelte: false, imported: true });
                                 }
 
-                                const defaultEx = fr[0].slice(0,fb) + fr[0].slice(lb+1).replace(",","").trim();
-                                if (defaultEx.length>0){
-                                    definedVars.push({var:defaultEx,isSvelte:fromSvelte, imported:true});
+                                const defaultEx = fr[0].slice(0, fb) + fr[0].slice(lb + 1).replace(",", "").trim();
+                                if (defaultEx.length > 0) {
+                                    definedVars.push({ var: defaultEx, isSvelte: fromSvelte, imported: true });
                                 }
 
                             }
 
                         }
                     }
-                    
+
                     /*
                     if (code.trim().length>0){
                         console.log("-----------------end code-------------------");
@@ -408,10 +469,13 @@ const walkScript = (script: string, base_script_offset = 0, componentNum = 0) =>
         */
     });
     console.log(definedVars);
-    return { script: script.slice(base_script_offset), components: newComponents, definedVars }
+    return { script: script.slice(base_script_offset), components: newComponents, definedVars, imports }
 }
 
-const walkNonScript = (nonscript: string, nComponents: number) => {
+const walkNonScript = (
+    nonscript: string,
+    nComponents: number,
+    definedVars: DefinedVar[]) => {
     let scriptSp = nonscript.split("<!--");
     let script = scriptSp[0] + scriptSp.slice(1).map(v => v.split("-->")[1]).join("");
 
@@ -429,7 +493,7 @@ const walkNonScript = (nonscript: string, nComponents: number) => {
                 return;
             }
 
-            const checkres = checkOuterJSX(node, script, script_offset, nComponents + newComponents.length);
+            const checkres = checkOuterJSX(node, script, script_offset, definedVars, nComponents + newComponents.length);
             if (checkres.hasInlineGeneralComponent) {
                 hasInlineComponent = true;
             }
