@@ -1,10 +1,12 @@
 # rollup-plugin-svelte-inline
 
-A plugin that enables you to write simple components in the script part of your .svelte file. Also it allowes you to use React-like conditions and array mappings instead of #if and #each directives. 
+A plugin that enables you to write simple components in the script part of your .svelte file. Also it allowes you to use React-like conditions and array mappings instead of #if and #each directives.
+
+The current version is more a proof of concept than something production-ready. 
 
 ## Get started
 
-Currently the code is quite "hacky", so it is not published to npm. So clone the repo:
+Currently the code is quite "hacky", so I won't publish this version to npm. So clone the repo:
 ```
 git clone https://github.com/micha-lmxt/rollup-plugin-svelte-inline
 ```
@@ -62,9 +64,9 @@ Also, this is possible:
 </script>
 <div>{myarray}</div>
 <!-- or directly in place -->
-<div>{}</div>
+<div>{("hello world").split("").map(v=>(<p>{v}</p>))</div>
 ```
-
+Please wrap the angle brackets into normal brackets when using functions like map, or the build will fail.
 
 
 ### Not working
@@ -75,5 +77,11 @@ Also, this is possible:
 
 
 
+
+
+------------------------------------
+
+
+<a href="https://www.buymeacoff.ee/michalmxt" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-yellow.png" alt="Buy Me A Coffee" height="41" width="174"></a>
 
 
