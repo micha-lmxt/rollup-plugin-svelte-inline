@@ -6,10 +6,13 @@ var __spreadArrays = (this && this.__spreadArrays) || function () {
             r[k] = a[j];
     return r;
 };
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-var estree_walker_1 = require("estree-walker");
 var createComponent_1 = require("./createComponent");
 var parser_1 = require("@babel/parser");
+var traverse_1 = __importDefault(require("@babel/traverse"));
 exports.processSvelte = function (code, addReplacer, id) {
     var s1 = code.split("<script");
     if (s1.length !== 2 && s1.length !== 1) {
@@ -26,7 +29,6 @@ exports.processSvelte = function (code, addReplacer, id) {
     style = "<style" + style + "</style>";
     html = s2[0] + html;
     html = replaceSvelteLogic(html);
-    console.log("here");
     var walkRes2 = walkNonScript(html, walkRes.components.length, walkRes.definedVars);
     var rebuiltScript = "<script" + s1[1].split(">")[0] + ">\n" +
         (walkRes2.hasInlineComponent ? "import SV__InlineGeneralComponent from 'rollup-plugin-svelte-inline/InlineComponent.svelte';\n" : "") +
@@ -35,6 +37,7 @@ exports.processSvelte = function (code, addReplacer, id) {
         "</script>";
     var resHtml = replaceSvelteLogic(walkRes2.script, true);
     createComponent_1.createSvelteComponents(walkRes.components.concat(walkRes2.components), walkRes.imports).forEach(function (v) { return addReplacer(makeNewComponentPath(id, v.name), v.code); });
+    console.log(rebuiltScript + "\n" + style + "\n" + resHtml);
     return rebuiltScript + "\n" + style + "\n" + resHtml;
 };
 var makeNewComponentPath = function (id, name) {
@@ -146,14 +149,11 @@ var checkOuterJSX = function (node, script, offset, defindeVars, componentnum) {
     var foundSomething = [];
     var hasInlineGeneralComponent = false;
     if (isJSX(node)) {
-        if (node.arguments && node.arguments.length > 0) {
-            var ar = node.arguments[0];
-            console.log(ar.name);
-        }
         // JSX element definition
-        for (var i = 1; i < node.arguments.length; i++) {
-            // walk through the arguments
-            var res = checkOuterJSX(node.arguments[i], newscript, newoffset, defindeVars, componentnum + foundSomething.length);
+        // check children
+        var children = node.children || [];
+        for (var i = 0; i < children.length; i++) {
+            var res = checkOuterJSX(node.children[i], newscript, newoffset, defindeVars, componentnum + foundSomething.length);
             newscript = res.script;
             newoffset = res.offset;
             if (res.hasInlineGeneralComponent) {
@@ -162,10 +162,7 @@ var checkOuterJSX = function (node, script, offset, defindeVars, componentnum) {
             foundSomething.push.apply(foundSomething, res.change);
         }
     }
-    else if (node.type === "ObjectExpression" && node.properties) {
-        //nothing here
-    }
-    else if (node.type !== "StringLiteral" && node.type !== "NullLiteral" && node.start && node.end) {
+    else if (node.type !== "JSXText" && !trivialElement(node) && node.start && node.end && node.expression) {
         /** todo: handle conditional expression via svelte if stuff
         if (node.type === 'ConditionalExpression'){
             const test = node.test
@@ -188,19 +185,24 @@ var checkOuterJSX = function (node, script, offset, defindeVars, componentnum) {
 
         }
         */
-        var oldscript = newscript.slice(node.start + newoffset, node.end + newoffset);
+        var expr = node.expression;
+        var oldscript = newscript.slice(expr.start + newoffset, expr.end + newoffset);
         // remove surrounding mustache bracket {}
-        var before = newscript.slice(0, node.start + newoffset);
+        var before = newscript.slice(0, expr.start + newoffset);
         var between = before.slice(before.lastIndexOf("{") + 1);
-        if (!between.includes("/*logicreplace-")) {
-            var after = newscript.slice(node.end + newoffset);
+        if (!between.includes("/*logicreplace-") && !oldscript.includes("/*logicreplace-")) {
+            var after = newscript.slice(expr.end + newoffset);
             var beforelen = newscript.length;
             // check for logicexchange
             var subwalk = walkScript("let a = " + oldscript, 8, componentnum + foundSomething.length);
+            console.log(subwalk.script);
             newscript = before.slice(0, before.lastIndexOf("{")) + "<SV__InlineGeneralComponent __z={" + subwalk.script + "}/>" + after.slice(after.indexOf("}") + 1);
             hasInlineGeneralComponent = true;
             foundSomething.push.apply(foundSomething, subwalk.components);
             newoffset += newscript.length - beforelen;
+        }
+        else {
+            console.log("skipped");
         }
     }
     return { script: newscript, offset: newoffset, change: foundSomething, hasInlineGeneralComponent: hasInlineGeneralComponent };
@@ -247,14 +249,18 @@ var walkScript = function (script, base_script_offset, componentNum) {
     if (!ast) {
         return { script: script, components: newComponents, definedVars: definedVars, imports: imports };
     }
-    var i = -3;
-    estree_walker_1.walk(ast, {
-        enter: function (nod /*, parent, prop, index*/) {
-            var node = nod;
-            i++;
-            if (i > 0 && i < 20) {
-                console.log(node);
-            }
+    traverse_1.default(ast, {
+        enter: function (path) {
+            var node = path.node;
+            /*
+            if(node.type==="Identifier"){
+                console.log(node.name)
+                console.log(path.isReferencedIdentifier());
+                if (path.isReferencedIdentifier()){
+                    console.log(path.scope.hasBinding(node.name));
+                }
+                
+            }*/
             if (node.start === undefined || node.start < skipto) {
                 return;
             }
@@ -334,8 +340,8 @@ var walkScript = function (script, base_script_offset, componentNum) {
                         // handle imports
                         var imp = code.split("import ").slice(1);
                         imports += imp.join("import ");
-                        for (var i_1 = 0; i_1 < imp.length; i_1++) {
-                            var im = imp[i_1];
+                        for (var i = 0; i < imp.length; i++) {
+                            var im = imp[i];
                             if (im.trim().startsWith("type")) {
                                 continue;
                             }
@@ -382,12 +388,12 @@ var walkNonScript = function (nonscript, nComponents, definedVars) {
     //let script = nonscript;
     var script_offset = -9;
     var newComponents = [];
-    var skipto = 7;
+    var skipto = 9;
     var hasInlineComponent = false;
-    estree_walker_1.walk(ast, {
-        enter: function (nod, parent, prop, index) {
-            var node = nod;
-            if (node.start === undefined || node.start < skipto || isNaN(parseInt(index))) {
+    traverse_1.default(ast, {
+        enter: function (path /*nod, parent: any, prop: any, index?: number | null*/) {
+            var node = path.node; // nod as (BaseNode & { start: undefined | number, end: undefined | number });
+            if (node.start === undefined || node.start < skipto /*|| isNaN(parseInt(index as any))*/) {
                 return;
             }
             var checkres = checkOuterJSX(node, script, script_offset, definedVars, nComponents + newComponents.length);

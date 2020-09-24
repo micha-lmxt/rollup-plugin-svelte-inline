@@ -1,8 +1,8 @@
 
-import { walk } from 'estree-walker';
 import { createSvelteComponents, ComponentReceipt } from './createComponent';
 import { parse } from '@babel/parser';
-import { BaseNode } from 'estree';
+import traverse from "@babel/traverse";
+
 
 interface DefinedVar { var: string, isSvelte: boolean, imported: boolean }
 
@@ -33,7 +33,7 @@ export const processSvelte = (code: string, addReplacer: (name: string, code: st
 
     html = replaceSvelteLogic(html);
 
-    console.log("here")
+
     const walkRes2 = walkNonScript(html, walkRes.components.length, walkRes.definedVars);
 
     const rebuiltScript = "<script" + s1[1].split(">")[0] + ">\n" +
@@ -47,6 +47,7 @@ export const processSvelte = (code: string, addReplacer: (name: string, code: st
 
     createSvelteComponents(walkRes.components.concat(walkRes2.components), walkRes.imports).forEach(v => addReplacer(makeNewComponentPath(id, v.name), v.code));
 
+    console.log(rebuiltScript + "\n" + style + "\n" + resHtml);
     return rebuiltScript + "\n" + style + "\n" + resHtml;
 }
 
@@ -124,13 +125,14 @@ const checkJSX = (node: any, definedVars: DefinedVar[], script: string, offset: 
 
 
     if (isJSX(node)) {
+        
         const elementName = node.openingElement?.name?.name;
         if (elementName.slice(0, 1) !== elementName.slice(0, 1).toLowerCase()) {
             const defined = definedVars.find(v => elementName === v.var);
             if (!defined) {
                 console.log("Warning, did not find Component: " + elementName);
-            }else{
-                if (!defined.isSvelte){
+            } else {
+                if (!defined.isSvelte) {
 
                 }
             }
@@ -183,38 +185,29 @@ const checkJSX = (node: any, definedVars: DefinedVar[], script: string, offset: 
 // check the non-script part of the svelte document
 const checkOuterJSX = (node: any, script: string, offset: number, defindeVars: DefinedVar[], componentnum = 0) => {
 
-
     let newoffset = offset;
     let newscript = script;
     let foundSomething: ComponentReceipt[] = [];
     let hasInlineGeneralComponent = false;
 
     if (isJSX(node)) {
-        if (node.arguments && node.arguments.length > 0) {
-            const ar = node.arguments[0]
-            console.log(ar.name);
-        }
-
         // JSX element definition
 
-        for (let i = 1; i < node.arguments.length; i++) {
-            // walk through the arguments
-
-            const res = checkOuterJSX(node.arguments[i], newscript, newoffset, defindeVars, componentnum + foundSomething.length);
+        // check children
+        const children = node.children||[];
+        for (let i = 0; i < children.length; i++) {
+            
+            const res = checkOuterJSX(node.children[i], newscript, newoffset, defindeVars, componentnum + foundSomething.length);
             newscript = res.script;
             newoffset = res.offset;
             if (res.hasInlineGeneralComponent) {
                 hasInlineGeneralComponent = true;
             }
             foundSomething.push(...res.change);
-
-
         }
 
 
-    } else if (node.type === "ObjectExpression" && node.properties) {
-        //nothing here
-    } else if (node.type !== "StringLiteral" && node.type !== "NullLiteral" && node.start && node.end) {
+    } else if (node.type !== "JSXText" && !trivialElement(node) && node.start && node.end && node.expression) {
 
         /** todo: handle conditional expression via svelte if stuff 
         if (node.type === 'ConditionalExpression'){
@@ -238,13 +231,18 @@ const checkOuterJSX = (node: any, script: string, offset: number, defindeVars: D
 
         }
         */
-        const oldscript = newscript.slice(node.start + newoffset, node.end + newoffset);
+        const expr = node.expression;
+        
+        
+        const oldscript = newscript.slice(expr.start + newoffset, expr.end + newoffset);
         // remove surrounding mustache bracket {}
-        const before = newscript.slice(0, node.start + newoffset);
+        const before = newscript.slice(0, expr.start + newoffset);
         const between = before.slice(before.lastIndexOf("{") + 1);
-        if (!between.includes("/*logicreplace-")) {
 
-            const after = newscript.slice(node.end + newoffset);
+        
+        if (!between.includes("/*logicreplace-") && !oldscript.includes("/*logicreplace-")) {
+
+            const after = newscript.slice(expr.end + newoffset);
             const beforelen = newscript.length;
 
 
@@ -253,11 +251,13 @@ const checkOuterJSX = (node: any, script: string, offset: number, defindeVars: D
 
             const subwalk = walkScript("let a = " + oldscript, 8, componentnum + foundSomething.length);
 
-
+            console.log(subwalk.script)
             newscript = before.slice(0, before.lastIndexOf("{")) + "<SV__InlineGeneralComponent __z={" + subwalk.script + "}/>" + after.slice(after.indexOf("}") + 1);
             hasInlineGeneralComponent = true;
             foundSomething.push(...subwalk.components);
             newoffset += newscript.length - beforelen;
+        }else{
+            console.log("skipped")
         }
     }
     return { script: newscript, offset: newoffset, change: foundSomething, hasInlineGeneralComponent: hasInlineGeneralComponent }
@@ -312,16 +312,19 @@ const walkScript = (script: string, base_script_offset = 0, componentNum = 0) =>
         return { script, components: newComponents, definedVars, imports }
     }
 
+    traverse(ast, {
+        enter: function (path) {
+            const node = path.node;
+            /*
+            if(node.type==="Identifier"){
+                console.log(node.name)
+                console.log(path.isReferencedIdentifier());
+                if (path.isReferencedIdentifier()){
+                    console.log(path.scope.hasBinding(node.name));
+                }
+                
+            }*/
 
-    let i = -3
-    walk((ast as unknown) as BaseNode, {
-        enter: function (nod/*, parent, prop, index*/) {
-            const node = nod as (BaseNode & { start: undefined | number, end: undefined | number });
-
-            i++;
-            if (i>0 && i < 20){
-                console.log(node)
-            }
 
             if (node.start === undefined || node.start! < skipto) {
                 return;
@@ -349,7 +352,7 @@ const walkScript = (script: string, base_script_offset = 0, componentNum = 0) =>
             // check code for assignments
             if (node.start! >= outerSkip && node.type === 'Program') {
                 const nob = (node as unknown) as { body?: { start: number, end: number }[], start: number, end: number };
-                let start = node.start;
+                let start = node.start!;
                 let j = 0;
                 const bl = nob.body ? nob.body.length : 0;
 
@@ -475,7 +478,9 @@ const walkScript = (script: string, base_script_offset = 0, componentNum = 0) =>
 const walkNonScript = (
     nonscript: string,
     nComponents: number,
-    definedVars: DefinedVar[]) => {
+    definedVars: DefinedVar[]
+) => {
+
     let scriptSp = nonscript.split("<!--");
     let script = scriptSp[0] + scriptSp.slice(1).map(v => v.split("-->")[1]).join("");
 
@@ -484,15 +489,15 @@ const walkNonScript = (
     //let script = nonscript;
     let script_offset = -9;
     const newComponents: ComponentReceipt[] = [];
-    let skipto = 7;
+    let skipto = 9;
     let hasInlineComponent = false;
-    walk((ast as unknown) as BaseNode, {
-        enter: function (nod, parent: any, prop: any, index?: number | null) {
-            const node = nod as (BaseNode & { start: undefined | number, end: undefined | number });
-            if (node.start === undefined || node.start! < skipto || isNaN(parseInt(index as any))) {
+    traverse(ast, {
+        enter: function (path/*nod, parent: any, prop: any, index?: number | null*/) {
+            const node = path.node// nod as (BaseNode & { start: undefined | number, end: undefined | number });
+            if (node.start === undefined || node.start! < skipto /*|| isNaN(parseInt(index as any))*/) {
                 return;
             }
-
+            
             const checkres = checkOuterJSX(node, script, script_offset, definedVars, nComponents + newComponents.length);
             if (checkres.hasInlineGeneralComponent) {
                 hasInlineComponent = true;
